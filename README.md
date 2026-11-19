@@ -9,9 +9,22 @@
 1. Mở link app ở trên, bấm **Share**.
 2. Thêm email từng người thân, chọn quyền **Editor**. Viewer hay Commenter chỉ xem được, không gửi tin được.
 3. **Không bật link công khai.** Khi bật, người được mời từ ngoài sẽ mất quyền gửi tin.
-4. Mỗi người mở link trong email, đăng nhập claude.ai, bấm *Cho phép* khi được hỏi, chọn nick rồi bấm **Sign In**.
+4. Mỗi người mở link trong email, đăng nhập claude.ai, bấm *Cho phép* khi được hỏi, rồi bấm **Get a new ID** để tạo ID và mật khẩu riêng.
 
 Mỗi người cần có tài khoản claude.ai riêng.
+
+## Tài khoản & bảo mật
+
+- **Đăng ký ID** gồm: chọn ID, đặt mật khẩu (tối thiểu 8 ký tự, có thanh đo độ mạnh, không được chứa ID hay quá dễ đoán), chọn câu hỏi bảo mật và nhập mã xác nhận.
+- **Đăng nhập** bằng ID + mật khẩu. Có các lựa chọn *Remember my ID & password*, *Sign in automatically* và *Sign in as invisible*.
+- **Mật khẩu không lưu dạng chữ:** chỉ lưu bản mã hóa một chiều PBKDF2-SHA256 (150.000 vòng, có salt). Bản mã này nằm trong vùng dữ liệu riêng mà chỉ tài khoản Claude của chính bạn đọc được; người kia và cả chủ trang đều không đọc được.
+- **"Ghi nhớ đăng nhập"** dùng một mã thiết bị ngẫu nhiên, không lưu mật khẩu trên máy. Có thể "Quên" từng thiết bị hoặc đăng xuất mọi thiết bị khác.
+- **Sai mật khẩu 5 lần** thì ID bị khóa đăng nhập 5 phút.
+- **Đăng nhập ở nơi khác** thì phiên cũ bị đăng xuất kèm thông báo, giống ngày xưa.
+- **Lịch sử 10 lần đăng nhập** gần nhất kèm thiết bị. Mỗi lần vào sẽ hiện thông báo "Lần đăng nhập trước".
+- **Quên mật khẩu:** trả lời câu hỏi bảo mật để đặt mật khẩu mới.
+- **Account Info:** đổi mật khẩu, đổi câu hỏi bảo mật, đổi tên hiển thị. Có tự khóa khi không dùng (5 phút đến 1 giờ) và nút *Khóa Messenger ngay*. Không thao tác 10 phút thì tự chuyển sang "Be Right Back".
+- Mỗi tài khoản Claude chỉ có một ID và chỉ đăng nhập được ID của chính mình. Lớp bảo vệ chính vẫn là tài khoản Claude cùng danh sách người được Share; mật khẩu trong app là lớp khóa thêm. Hãy đặt mật khẩu riêng cho app, đừng dùng lại mật khẩu email hay ngân hàng.
 
 ## Tính năng
 
