@@ -1478,134 +1478,470 @@ function Modal({ title, children, onClose, width = 340 }) {
   );
 }
 
-/* ------------------------------ Đăng nhập ------------------------------ */
+/* ------------------------------ Tài khoản & bảo mật ------------------------------ */
 
-const NICK_RE = /^[a-z0-9_.]{3,24}$/;
-function suggestNick(name) {
-  const base = norm(name).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 16);
-  return `${base || 'ban_moi'}_${pick(['2007', '9x', 'kute', 'cool', 'xinh', 'vip'])}`;
+const ID_RE = /^[a-z0-9_.]{3,24}$/;
+const SECURITY_QUESTIONS = [
+  'Tên con vật nuôi đầu tiên của bạn?',
+  'Tên trường tiểu học của bạn?',
+  'Món ăn bạn thích nhất hồi nhỏ?',
+  'Tên người bạn thân nhất hồi nhỏ?',
+  'Bạn sinh ra ở thành phố nào?',
+  'Biệt danh ở nhà của bạn?',
+];
+const COMMON_PW = ['12345678', '123456789', 'password', 'matkhau', 'iloveyou', 'qwertyui', '11111111', 'abc12345', 'anhyeuem', 'emyeuanh'];
+const PBKDF2_ITER = 150000;
+const te = new TextEncoder();
+const toB64 = (buf) => { let s = ''; new Uint8Array(buf).forEach((b) => { s += String.fromCharCode(b); }); return btoa(s); };
+const fromB64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+const randB64 = (n) => { const a = new Uint8Array(n); crypto.getRandomValues(a); return toB64(a); };
+const hasCrypto = () => typeof crypto !== 'undefined' && crypto.subtle && typeof crypto.getRandomValues === 'function';
+
+async function pbkdf2(secret, saltB64, iter) {
+  const key = await crypto.subtle.importKey('raw', te.encode(secret), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: fromB64(saltB64), iterations: iter }, key, 256);
+  return toB64(bits);
+}
+async function makeVerifier(secret) {
+  const salt = randB64(16);
+  return { salt, iter: PBKDF2_ITER, hash: await pbkdf2(secret, salt, PBKDF2_ITER) };
+}
+async function checkVerifier(secret, v) {
+  if (!v || !v.salt || !v.hash) return false;
+  const h = await pbkdf2(secret, v.salt, v.iter || PBKDF2_ITER);
+  let diff = h.length ^ v.hash.length;
+  for (let i = 0; i < Math.min(h.length, v.hash.length); i++) diff |= h.charCodeAt(i) ^ v.hash.charCodeAt(i);
+  return diff === 0;
+}
+async function sha256b64(s) { return toB64(await crypto.subtle.digest('SHA-256', te.encode(s))); }
+const normAnswer = (s) => norm(s).replace(/\s+/g, ' ').trim();
+
+function pwProblem(pw, id) {
+  if (pw.length < 8) return 'Mật khẩu cần ít nhất 8 ký tự.';
+  if (id && pw.toLowerCase().includes(id.toLowerCase())) return 'Mật khẩu không được chứa ID.';
+  if (COMMON_PW.includes(pw.toLowerCase())) return 'Mật khẩu này quá dễ đoán, chọn cái khác nhé.';
+  return '';
+}
+function pwStrength(pw) {
+  let s = 0;
+  if (pw.length >= 8) s++;
+  if (pw.length >= 12) s++;
+  if (/[a-z]/.test(pw) && /[A-Z]/.test(pw)) s++;
+  if (/\d/.test(pw)) s++;
+  if (/[^A-Za-z0-9]/.test(pw)) s++;
+  if (s <= 2) return { s, label: 'Yếu', color: '#d4442f' };
+  if (s === 3) return { s, label: 'Trung bình', color: '#e08a00' };
+  return { s, label: 'Mạnh', color: '#2a9d3a' };
+}
+function describeDevice() {
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || '';
+  const os = /iPhone|iPad|iPod/.test(ua) ? 'iPhone/iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X|Macintosh/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : 'Thiết bị lạ';
+  const br = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Chrome\//.test(ua) ? 'Chrome' : /Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : 'trình duyệt';
+  return `${os} · ${br}`;
+}
+const fmtDateTime = (ts) => { if (!ts) return '—'; const d = new Date(ts); return `${pad2(d.getHours())}:${pad2(d.getMinutes())} ${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()}`; };
+
+function Captcha({ onCode, refreshKey }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 5; i++) code += chars[Math.floor(Math.random() * chars.length)];
+    onCode(code);
+    const cv = ref.current;
+    if (!cv) return;
+    const g = cv.getContext('2d');
+    if (!g) return;
+    g.fillStyle = '#f4ecf8'; g.fillRect(0, 0, cv.width, cv.height);
+    for (let i = 0; i < 40; i++) { g.fillStyle = `rgba(${90 + Math.random() * 120},${40 + Math.random() * 80},${140 + Math.random() * 100},.35)`; g.fillRect(Math.random() * cv.width, Math.random() * cv.height, 2, 2); }
+    [...code].forEach((ch, i) => {
+      g.save();
+      g.translate(16 + i * 25, 30 + Math.random() * 6 - 3);
+      g.rotate((Math.random() - 0.5) * 0.7);
+      g.font = `bold ${22 + Math.floor(Math.random() * 6)}px "Comic Sans MS", Georgia, serif`;
+      g.fillStyle = ['#5a0073', '#7B0099', '#2a4bb5', '#a3135a'][i % 4];
+      g.fillText(ch, 0, 0);
+      g.restore();
+    });
+    for (let i = 0; i < 3; i++) {
+      g.strokeStyle = 'rgba(123,0,153,.45)'; g.lineWidth = 1.4; g.beginPath();
+      g.moveTo(0, Math.random() * cv.height);
+      g.bezierCurveTo(50, Math.random() * cv.height, 100, Math.random() * cv.height, cv.width, Math.random() * cv.height);
+      g.stroke();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
+  return <canvas ref={ref} width={140} height={44} style={{ border: '1px solid #a99bb3', borderRadius: 2, background: '#f4ecf8' }} aria-label="Mã xác nhận" />;
 }
 
-function LoginPanel({ phase, member, profileName, takenNicks, solo, autoSignIn, onSignIn, mobile, error: extError }) {
-  const isNew = !member;
-  const [nick, setNick] = useState(() => (member ? member.nick : suggestNick(profileName)));
-  const [avatarIdx, setAvatarIdx] = useState(() => (member ? member.avatar || 0 : hashStr(profileName || 'x') % MY_AVATARS.length));
-  const [invisible, setInvisible] = useState(false);
-  const [auto, setAuto] = useState(autoSignIn);
-  const [editingNick, setEditingNick] = useState(isNew);
-  const [signing, setSigning] = useState(false);
-  const [error, setError] = useState('');
-  const timer = useRef(null);
-  const autoDone = useRef(false);
-  useEffect(() => () => clearTimeout(timer.current), []);
-  useEffect(() => { if (member && !editingNick) { setNick(member.nick); setAvatarIdx(member.avatar || 0); } }, [member, editingNick]);
+function PwField({ id, label, value, onChange, autoComplete, mobile, meter, idForCheck }) {
+  const [show, setShow] = useState(false);
+  const st = meter && value ? pwStrength(value) : null;
+  return (
+    <div className="flex flex-col gap-1">
+      <label htmlFor={id} style={{ fontSize: 12, color: '#333', fontWeight: 700 }}>{label}</label>
+      <div className="flex items-center" style={{ border: '1px solid #7f9db9', borderRadius: 2, background: '#fff' }}>
+        <input id={id} type={show ? 'text' : 'password'} autoComplete={autoComplete} value={value} onChange={(e) => onChange(e.target.value)} className="flex-1 min-w-0" style={{ fontSize: mobile ? 16 : 13, padding: mobile ? '8px' : '4px 6px', border: 'none', outline: 'none', background: 'transparent', fontFamily: UI_FONT }} />
+        <button type="button" onClick={() => setShow((v) => !v)} className="px-2" style={{ fontSize: 10.5, color: '#6d5a78' }} title={show ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}>{show ? 'Ẩn' : 'Hiện'}</button>
+      </div>
+      {st && (
+        <div className="flex items-center gap-2" style={{ fontSize: 11 }}>
+          <div className="flex gap-px flex-1" style={{ maxWidth: 160 }}>
+            {[0, 1, 2, 3, 4].map((i) => <span key={i} style={{ flex: 1, height: 5, background: i < st.s ? st.color : '#e3dce8' }} />)}
+          </div>
+          <span style={{ color: st.color, fontWeight: 700 }}>{st.label}</span>
+          {idForCheck !== undefined && pwProblem(value, idForCheck) ? <span style={{ color: '#a33' }}>{pwProblem(value, idForCheck)}</span> : null}
+        </div>
+      )}
+    </div>
+  );
+}
 
-  const submit = (e) => {
-    if (e) e.preventDefault();
+function LoginPanel({ phase, member, account, profileName, takenNicks, solo, lastId, hasRememberedDevice, rememberPref, autoSignIn, kickedMsg, onSignIn, onRegister, onRecover, onSetPassword, mobile }) {
+  const locked = phase === 'locked';
+  const initialMode = locked ? 'signin' : !member ? 'register' : !(account && account.pw) ? 'setpw' : 'signin';
+  const [mode, setMode] = useState(initialMode);
+  const [id, setId] = useState(() => (member ? member.nick : lastId || ''));
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [displayName, setDisplayName] = useState(profileName || '');
+  const [question, setQuestion] = useState(SECURITY_QUESTIONS[0]);
+  const [answer, setAnswer] = useState('');
+  const [avatarIdx, setAvatarIdx] = useState(() => (member ? member.avatar || 0 : hashStr(profileName || 'x') % MY_AVATARS.length));
+  const [remember, setRemember] = useState(rememberPref);
+  const [auto, setAuto] = useState(autoSignIn);
+  const [invisible, setInvisible] = useState(false);
+  const [captcha, setCaptcha] = useState('');
+  const [captchaIn, setCaptchaIn] = useState('');
+  const [captchaKey, setCaptchaKey] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const autoDone = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
+
+  const run = async (fn) => {
     sfx.unlock();
-    const clean = nick.trim().toLowerCase();
-    if (!NICK_RE.test(clean)) { setError('Nick gồm 3–24 ký tự: chữ thường không dấu, số, dấu _ hoặc dấu chấm.'); return; }
-    if (takenNicks.has(clean) && (!member || member.nick !== clean)) { setError(`Nick "${clean}" đã có người trong nhà dùng rồi, chọn nick khác nha.`); return; }
+    if (!hasCrypto()) { setError('Trình duyệt này không hỗ trợ mã hóa mật khẩu. Hãy dùng Chrome, Safari, Edge hoặc Firefox bản mới.'); return; }
     setError('');
-    setSigning(true);
-    timer.current = setTimeout(async () => {
-      const ok = await onSignIn({ nick: clean, avatarIdx, invisible, auto });
-      if (ok === false) setSigning(false);
-    }, 1200);
+    setBusy(true);
+    const started = Date.now();
+    let err = null;
+    try { err = await fn(); } catch (e) { err = `Có lỗi (${(e && e.code) || (e && e.message) || 'không rõ'}). Thử lại nhé.`; }
+    const wait = Math.max(0, 900 - (Date.now() - started));
+    await new Promise((r) => setTimeout(r, wait));
+    if (!alive.current) return;
+    setBusy(false);
+    if (err) { setError(err); setPw(''); setPw2(''); setCaptchaKey((k) => k + 1); setCaptchaIn(''); }
   };
 
-  // Tự đăng nhập nếu đã chọn "Sign in automatically"
+  const useToken = hasRememberedDevice && rememberPref && !pw && !locked;
+  const submitSignIn = (e) => {
+    if (e) e.preventDefault();
+    const clean = id.trim().toLowerCase();
+    if (!clean) { setError('Nhập ID của bạn.'); return; }
+    if (!pw && !useToken) { setError('Nhập mật khẩu.'); return; }
+    run(() => onSignIn({ id: clean, password: pw, useToken, remember, auto: remember && auto, invisible }));
+  };
+  const checkNewPw = (cleanId) => {
+    const p = pwProblem(pw, cleanId);
+    if (p) return p;
+    if (pw !== pw2) return 'Hai lần nhập mật khẩu chưa giống nhau.';
+    if (normAnswer(answer).length < 2) return 'Nhập câu trả lời cho câu hỏi bảo mật.';
+    if (captchaIn.trim().toUpperCase() !== captcha) return 'Mã xác nhận chưa đúng, nhìn kỹ lại nhé.';
+    return '';
+  };
+  const submitRegister = (e) => {
+    e.preventDefault();
+    const clean = id.trim().toLowerCase();
+    if (!ID_RE.test(clean)) { setError('ID gồm 3–24 ký tự: chữ thường không dấu, số, dấu _ hoặc dấu chấm.'); return; }
+    if (takenNicks.has(clean)) { setError(`ID "${clean}" đã có người dùng, chọn ID khác nha.`); return; }
+    const p = checkNewPw(clean);
+    if (p) { setError(p); setCaptchaKey((k) => k + 1); setCaptchaIn(''); return; }
+    run(() => onRegister({ id: clean, password: pw, displayName: displayName.trim(), question, answer, avatarIdx, invisible }));
+  };
+  const submitSetPw = (e) => {
+    e.preventDefault();
+    const p = checkNewPw(member ? member.nick : '');
+    if (p) { setError(p); setCaptchaKey((k) => k + 1); setCaptchaIn(''); return; }
+    run(() => onSetPassword({ password: pw, question, answer }));
+  };
+  const submitRecover = (e) => {
+    e.preventDefault();
+    const p = pwProblem(pw, member ? member.nick : '');
+    if (normAnswer(answer).length < 1) { setError('Nhập câu trả lời bảo mật.'); return; }
+    if (p) { setError(p); return; }
+    if (pw !== pw2) { setError('Hai lần nhập mật khẩu chưa giống nhau.'); return; }
+    run(() => onRecover({ answer, password: pw }));
+  };
+
+  // Tự đăng nhập bằng thiết bị đã ghi nhớ
   useEffect(() => {
-    if (phase === 'login' && member && autoSignIn && !autoDone.current) { autoDone.current = true; submit(); }
+    if (phase === 'login' && mode === 'signin' && autoSignIn && hasRememberedDevice && member && !autoDone.current) {
+      autoDone.current = true;
+      run(() => onSignIn({ id: member.nick, password: '', useToken: true, remember: true, auto: true, invisible: false }));
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [phase, member, autoSignIn]);
+  }, [phase, mode]);
 
   const label = { fontSize: 12, color: '#333', fontWeight: 700 };
   const input = { fontSize: mobile ? 16 : 13, border: '1px solid #7f9db9', borderRadius: 2, padding: mobile ? '8px' : '4px 6px', background: '#fff', width: '100%', outline: 'none', fontFamily: UI_FONT, color: '#111' };
-  const check = (id, checked, set, text) => (
-    <label htmlFor={id} className="flex items-center gap-2 cursor-pointer select-none" style={{ fontSize: 12, color: '#333' }}>
-      <input id={id} type="checkbox" checked={checked} onChange={(e) => set(e.target.checked)} style={{ width: 14, height: 14, accentColor: PURPLE }} />
+  const check = (cid, checked, set, text, disabled) => (
+    <label htmlFor={cid} className="flex items-center gap-2 cursor-pointer select-none" style={{ fontSize: 12, color: disabled ? '#aaa' : '#333' }}>
+      <input id={cid} type="checkbox" checked={checked} disabled={disabled} onChange={(e) => set(e.target.checked)} style={{ width: 14, height: 14, accentColor: PURPLE }} />
       {text}
     </label>
   );
+  const link = (text, onClick) => <button type="button" style={{ color: '#0645ad', textDecoration: 'underline', fontSize: 12 }} onClick={() => { setError(''); setPw(''); setPw2(''); onClick(); }}>{text}</button>;
+  const yellowBtn = (text) => (
+    <button type="submit" disabled={busy} className="mt-1 self-center active:translate-y-px disabled:opacity-60" style={{ background: GRAD.signIn, border: '1px solid #a86b00', borderRadius: 4, padding: mobile ? '10px 40px' : '6px 36px', fontWeight: 700, fontSize: mobile ? 16 : 14, color: '#3d2200', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.9), 0 2px 3px rgba(0,0,0,.2)', textShadow: '0 1px 0 rgba(255,255,255,.6)' }}>{text}</button>
+  );
+  const sqFields = (
+    <>
+      <div className="flex flex-col gap-1">
+        <label htmlFor="nm-sq" style={label}>Câu hỏi bảo mật (để lấy lại mật khẩu):</label>
+        <select id="nm-sq" value={question} onChange={(e) => setQuestion(e.target.value)} style={input}>{SECURITY_QUESTIONS.map((q) => <option key={q} value={q}>{q}</option>)}</select>
+        <input id="nm-sa" autoComplete="off" value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Câu trả lời của bạn" style={input} />
+      </div>
+      <div className="flex flex-col gap-1">
+        <span style={label}>Nhập mã xác nhận:</span>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Captcha onCode={setCaptcha} refreshKey={captchaKey} />
+          <button type="button" onClick={() => setCaptchaKey((k) => k + 1)} style={{ fontSize: 11, color: '#0645ad', textDecoration: 'underline' }}>Đổi mã khác</button>
+        </div>
+        <input id="nm-captcha" autoComplete="off" autoCapitalize="characters" value={captchaIn} onChange={(e) => setCaptchaIn(e.target.value)} placeholder="5 ký tự trong hình" style={{ ...input, maxWidth: 160, textTransform: 'uppercase' }} />
+      </div>
+    </>
+  );
   const av = MY_AVATARS[avatarIdx] || MY_AVATARS[0];
+
+  let body;
+  if (phase === 'connecting') {
+    body = (
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 py-10" style={{ color: PURPLE, fontWeight: 700, fontSize: 14 }}>
+        <span>Đang kết nối<span className="ym-dots" /></span>
+        <span style={{ fontSize: 11, color: '#777', fontWeight: 400 }}>Nếu được hỏi quyền, hãy bấm Cho phép.</span>
+      </div>
+    );
+  } else if (busy) {
+    body = (
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-10 gap-4">
+        <div style={{ fontSize: 14, color: PURPLE, fontWeight: 700 }}>{mode === 'register' ? 'Đang tạo ID' : 'Signing in'}<span className="ym-dots" /></div>
+        <div className="w-full overflow-hidden" style={{ maxWidth: 220, height: 12, border: '1px solid #8d7a99', borderRadius: 2, background: '#fff' }}>
+          <div className="ym-progress h-full" style={{ background: 'repeating-linear-gradient(90deg,#9b2fbf 0 10px,#c77de0 10px 14px)' }} />
+        </div>
+        <div style={{ fontSize: 12, color: '#555' }}>{id.trim().toLowerCase()}</div>
+      </div>
+    );
+  } else if (mode === 'signin') {
+    body = (
+      <form onSubmit={submitSignIn} className="flex-1 flex flex-col px-6 py-4 gap-3 w-full mx-auto" style={{ maxWidth: 360 }}>
+        {locked && <div className="p-2 rounded flex items-center gap-2" style={{ fontSize: 12, background: '#f6f0fa', border: '1px solid #dccbe6', color: '#4b2a5c' }}>🔒 Messenger đã khóa vì lâu không dùng. Nhập mật khẩu để mở lại.</div>}
+        {kickedMsg && !locked && <div className="p-2 rounded" style={{ fontSize: 12, lineHeight: 1.45, background: '#fff6d6', border: '1px solid #f0d27a', color: '#6b4a00' }}>{kickedMsg}</div>}
+        <div className="flex flex-col gap-1">
+          <label style={label} htmlFor="nm-id">Messenger ID:</label>
+          <input id="nm-id" autoComplete="username" autoCapitalize="none" spellCheck={false} style={{ ...input, background: locked ? '#f2eef5' : '#fff' }} readOnly={locked} value={id} onChange={(e) => setId(e.target.value)} placeholder="vd: hot_boy_2007" />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label style={label} htmlFor="nm-pw">Password:</label>
+          <input id="nm-pw" type="password" autoComplete="current-password" style={input} value={pw} onChange={(e) => setPw(e.target.value)} placeholder={useToken ? '•••••••• (đã ghi nhớ trên máy này)' : ''} />
+        </div>
+        {error && <div style={{ fontSize: 12, color: '#c00000' }}>{error}</div>}
+        {!locked && (
+          <div className="flex flex-col gap-2">
+            {check('nm-remember', remember, setRemember, 'Remember my ID & password')}
+            {check('nm-auto', remember && auto, setAuto, 'Sign in automatically', !remember)}
+            {check('nm-invisible', invisible, setInvisible, 'Sign in as invisible to everyone')}
+          </div>
+        )}
+        {yellowBtn(locked ? 'Unlock' : 'Sign In')}
+        <div className="flex flex-col items-center gap-1 mt-1">
+          {link('Forgot your password?', () => setMode('forgot'))}
+          {!locked && !member && link('Get a new ID', () => setMode('register'))}
+        </div>
+      </form>
+    );
+  } else if (mode === 'register' || mode === 'setpw') {
+    const isReg = mode === 'register';
+    body = (
+      <form onSubmit={isReg ? submitRegister : submitSetPw} className="flex-1 flex flex-col px-6 py-4 gap-3 w-full mx-auto" style={{ maxWidth: 380 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: PURPLE }}>{isReg ? 'Đăng ký Messenger ID mới' : 'Đặt mật khẩu cho ID của bạn'}</div>
+        {isReg ? (
+          <>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="nm-newid" style={label}>Chọn ID:</label>
+              <input id="nm-newid" autoComplete="username" autoCapitalize="none" spellCheck={false} maxLength={24} value={id} onChange={(e) => setId(e.target.value)} placeholder="vd: cong_chua_2007" style={input} />
+              <span style={{ fontSize: 11, color: '#857a8c' }}>Người kia sẽ thấy ID này. Mỗi tài khoản Claude có một ID.</span>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label htmlFor="nm-dname" style={label}>Tên hiển thị:</label>
+              <input id="nm-dname" autoComplete="off" maxLength={40} value={displayName} onChange={(e) => setDisplayName(e.target.value)} style={input} />
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 12 }}>ID: <b>{member && member.nick}</b></div>
+        )}
+        <PwField id="nm-newpw" label="Mật khẩu (ít nhất 8 ký tự):" value={pw} onChange={setPw} autoComplete="new-password" mobile={mobile} meter idForCheck={isReg ? id.trim().toLowerCase() : member && member.nick} />
+        <PwField id="nm-newpw2" label="Nhập lại mật khẩu:" value={pw2} onChange={setPw2} autoComplete="new-password" mobile={mobile} />
+        {sqFields}
+        {isReg && (
+          <div className="flex flex-col gap-1">
+            <span style={label}>Display Image:</span>
+            <div className="flex flex-wrap gap-1">
+              {MY_AVATARS.map((a, i) => (
+                <button key={a[0]} type="button" onClick={() => setAvatarIdx(i)} title="Chọn ảnh đại diện" className="rounded" style={{ padding: 2, border: i === avatarIdx ? `2px solid ${PURPLE}` : '2px solid transparent' }}>
+                  <Avatar emoji={a[0]} bg={[a[1], a[2]]} size={mobile ? 34 : 28} />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        {error && <div style={{ fontSize: 12, color: '#c00000' }}>{error}</div>}
+        {yellowBtn(isReg ? 'Tạo ID' : 'Lưu mật khẩu')}
+        {isReg && member === null && <div className="flex justify-center">{link('Đã có ID? Sign In', () => setMode('signin'))}</div>}
+      </form>
+    );
+  } else {
+    const q = account && account.sq && account.sq.q;
+    body = (
+      <form onSubmit={submitRecover} className="flex-1 flex flex-col px-6 py-4 gap-3 w-full mx-auto" style={{ maxWidth: 380 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: PURPLE }}>Lấy lại mật khẩu</div>
+        {!member || !q ? (
+          <div style={{ fontSize: 12 }}>Tài khoản Claude này chưa có ID hoặc chưa đặt câu hỏi bảo mật.</div>
+        ) : (
+          <>
+            <div style={{ fontSize: 12 }}>ID: <b>{member.nick}</b></div>
+            <div className="flex flex-col gap-1">
+              <span style={label}>{q}</span>
+              <input id="nm-ans" autoComplete="off" value={answer} onChange={(e) => setAnswer(e.target.value)} placeholder="Câu trả lời" style={input} />
+            </div>
+            <PwField id="nm-rpw" label="Mật khẩu mới:" value={pw} onChange={setPw} autoComplete="new-password" mobile={mobile} meter idForCheck={member.nick} />
+            <PwField id="nm-rpw2" label="Nhập lại mật khẩu mới:" value={pw2} onChange={setPw2} autoComplete="new-password" mobile={mobile} />
+            <div style={{ fontSize: 11, color: '#857a8c' }}>Đặt lại mật khẩu sẽ đăng xuất mọi thiết bị đang ghi nhớ.</div>
+            {error && <div style={{ fontSize: 12, color: '#c00000' }}>{error}</div>}
+            {yellowBtn('Đặt lại mật khẩu')}
+          </>
+        )}
+        <div className="flex justify-center">{link('Quay lại Sign In', () => setMode(member && account && account.pw ? 'signin' : initialMode))}</div>
+      </form>
+    );
+  }
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-y-auto" style={{ background: 'linear-gradient(180deg,#ffffff 0%,#f1eef4 40%,#dedbe2 100%)', fontFamily: UI_FONT }}>
-      <div className="flex flex-col items-center pt-5 pb-4 px-4" style={{ background: 'linear-gradient(180deg,#f8f0fb 0%,#ffffff 100%)', borderBottom: '1px solid #e3d6ea' }}>
-        <div className={signing || phase === 'connecting' ? 'ym-bounce' : 'ym-float'}><YMLogo size={mobile ? 88 : 76} /></div>
-        <div className="mt-3"><Wordmark size={mobile ? 25 : 21} /></div>
-        <div style={{ fontSize: 11, color: '#7a6a85' }} className="mt-1">phong cách 2007 · cho cả nhà</div>
+      <div className="flex flex-col items-center pt-4 pb-3 px-4" style={{ background: 'linear-gradient(180deg,#f8f0fb 0%,#ffffff 100%)', borderBottom: '1px solid #e3d6ea' }}>
+        <div className={busy || phase === 'connecting' ? 'ym-bounce' : 'ym-float'}>
+          {member && mode !== 'register' ? <Avatar emoji={av[0]} bg={[av[1], av[2]]} size={mobile ? 72 : 60} /> : <YMLogo size={mobile ? 80 : 68} />}
+        </div>
+        <div className="mt-2"><Wordmark size={mobile ? 24 : 20} /></div>
+        <div style={{ fontSize: 11, color: '#7a6a85' }} className="mt-1">phong cách 2007</div>
       </div>
-
-      {phase === 'connecting' ? (
-        <div className="flex-1 flex flex-col items-center justify-center gap-3 px-6 py-10" style={{ color: PURPLE, fontWeight: 700, fontSize: 14 }}>
-          <span>Đang kết nối<span className="ym-dots" /></span>
-          <span style={{ fontSize: 11, color: '#777', fontWeight: 400 }}>Nếu được hỏi quyền, hãy bấm Cho phép.</span>
-        </div>
-      ) : signing ? (
-        <div className="flex-1 flex flex-col items-center justify-center px-6 py-10 gap-4">
-          <div style={{ fontSize: 14, color: PURPLE, fontWeight: 700 }}>Signing in<span className="ym-dots" /></div>
-          <div className="w-full overflow-hidden" style={{ maxWidth: 220, height: 12, border: '1px solid #8d7a99', borderRadius: 2, background: '#fff' }}>
-            <div className="ym-progress h-full" style={{ background: 'repeating-linear-gradient(90deg,#9b2fbf 0 10px,#c77de0 10px 14px)' }} />
-          </div>
-          <div style={{ fontSize: 12, color: '#555' }}>{nick.trim().toLowerCase()}</div>
-          <XPButton onClick={() => { clearTimeout(timer.current); setSigning(false); }}>Cancel</XPButton>
-        </div>
-      ) : (
-        <form onSubmit={submit} className="flex-1 flex flex-col px-6 py-4 gap-3 w-full mx-auto" style={{ maxWidth: 360 }}>
-          {!isNew && !editingNick ? (
-            <div className="flex items-center gap-3 p-2 rounded" style={{ background: '#fff', border: '1px solid #d8cce0' }}>
-              <Avatar emoji={av[0]} bg={[av[1], av[2]]} size={48} />
-              <div className="flex-1 min-w-0">
-                <div style={{ fontSize: 11, color: '#777' }}>Đăng nhập với nick</div>
-                <div className="truncate" style={{ fontSize: 15, fontWeight: 700, color: '#222' }}>{member.nick}</div>
-                {profileName ? <div className="truncate" style={{ fontSize: 11, color: '#8a7a96' }}>tài khoản: {profileName}</div> : null}
-              </div>
-              <button type="button" style={{ fontSize: 11, color: '#0645ad', textDecoration: 'underline' }} onClick={() => setEditingNick(true)}>Đổi nick</button>
-            </div>
-          ) : (
-            <>
-              <div className="flex flex-col gap-1">
-                <label style={label} htmlFor="nm-nick">{isNew ? 'Chọn nick của bạn (kiểu 2007):' : 'Nick mới:'}</label>
-                <input id="nm-nick" autoComplete="off" autoCapitalize="none" spellCheck={false} style={input} value={nick} maxLength={24} onChange={(e) => setNick(e.target.value)} placeholder="vd: hot_boy_2007" />
-                <span style={{ fontSize: 11, color: '#857a8c' }}>Người thân sẽ thấy nick này. Không cần mật khẩu: bạn đã đăng nhập bằng tài khoản Claude{profileName ? ` (${profileName})` : ''}.</span>
-              </div>
-              <div className="flex flex-col gap-1">
-                <span style={label}>Display Image:</span>
-                <div className="flex flex-wrap gap-1">
-                  {MY_AVATARS.map((a, i) => (
-                    <button key={a[0]} type="button" onClick={() => setAvatarIdx(i)} title="Chọn ảnh đại diện" className="rounded" style={{ padding: 2, border: i === avatarIdx ? `2px solid ${PURPLE}` : '2px solid transparent' }}>
-                      <Avatar emoji={a[0]} bg={[a[1], a[2]]} size={mobile ? 36 : 30} />
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
-          {(error || extError) && <div style={{ fontSize: 12, color: '#c00000' }}>{error || extError}</div>}
-          <div className="flex flex-col gap-2">
-            {check('nm-invisible', invisible, setInvisible, 'Sign in as invisible to everyone')}
-            {check('nm-auto', auto, setAuto, 'Sign in automatically')}
-          </div>
-          <button
-            type="submit"
-            className="mt-1 self-center active:translate-y-px"
-            style={{ background: GRAD.signIn, border: '1px solid #a86b00', borderRadius: 4, padding: mobile ? '10px 44px' : '6px 40px', fontWeight: 700, fontSize: mobile ? 16 : 14, color: '#3d2200', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.9), 0 2px 3px rgba(0,0,0,.2)', textShadow: '0 1px 0 rgba(255,255,255,.6)' }}
-          >
-            Sign In
-          </button>
-          {solo && (
-            <div className="p-2 rounded" style={{ fontSize: 11, lineHeight: 1.45, color: '#6b4a00', background: '#fff6d6', border: '1px solid #f0d27a' }}>
-              Chế độ một mình: trang này chưa kết nối được dữ liệu chung nên chỉ chat được với bạn ảo. Mở trang từ đường link claude.ai mà chủ nhà chia sẻ để chat với người thân.
-            </div>
-          )}
-          <div className="mt-auto pt-3 text-center" style={{ fontSize: 10.5, color: '#857a8c', lineHeight: 1.45 }}>
-            Messenger riêng của gia đình, phong cách 2007. Chỉ những người được mời vào artifact mới vào được.
-          </div>
-        </form>
-      )}
+      {body}
+      <div className="pb-3 px-6 text-center" style={{ fontSize: 10.5, color: '#857a8c', lineHeight: 1.45 }}>
+        {solo ? 'Chế độ một mình: tài khoản chỉ lưu trên máy này.' : 'Mật khẩu được mã hóa một chiều và lưu ở vùng riêng mà chỉ tài khoản Claude của bạn đọc được.'}
+      </div>
     </div>
+  );
+}
+
+function AccountDialog({ member, account, currentDeviceKey, autolock, onAutolock, onChangePassword, onChangeQuestion, onDisplayName, onForgetDevice, onForgetOthers, onClose, mobile }) {
+  const [tab, setTab] = useState('info');
+  const [name, setName] = useState((member && member.displayName) || '');
+  const [cur, setCur] = useState('');
+  const [pw, setPw] = useState('');
+  const [pw2, setPw2] = useState('');
+  const [q, setQ] = useState((account && account.sq && account.sq.q) || SECURITY_QUESTIONS[0]);
+  const [a, setA] = useState('');
+  const [msg, setMsg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const input = { fontSize: mobile ? 16 : 12, border: '1px solid #7f9db9', borderRadius: 2, padding: '4px 6px', width: '100%', outline: 'none', background: '#fff' };
+  const go = async (fn) => {
+    setBusy(true); setMsg(null);
+    let err = null;
+    try { err = await fn(); } catch (e) { err = `Có lỗi (${(e && e.code) || 'không rõ'}).`; }
+    setBusy(false);
+    setMsg(err ? { bad: true, text: err } : { bad: false, text: 'Đã lưu.' });
+    if (!err) { setCur(''); setPw(''); setPw2(''); setA(''); }
+  };
+  const devices = Object.entries((account && account.devices) || {});
+  const tabBtn = (k, t) => <button type="button" onClick={() => { setTab(k); setMsg(null); }} className="px-3 py-1" style={{ fontSize: 12, fontWeight: tab === k ? 700 : 400, borderBottom: tab === k ? `2px solid ${PURPLE}` : '2px solid transparent', color: tab === k ? PURPLE : '#444' }}>{t}</button>;
+  return (
+    <Modal title="Account Info — Bảo mật tài khoản" onClose={onClose} width={460}>
+      <div className="flex gap-1 mb-3" style={{ borderBottom: '1px solid #e3d6ea' }}>{tabBtn('info', 'Thông tin')}{tabBtn('pw', 'Mật khẩu')}{tabBtn('sec', 'Bảo mật')}</div>
+      <div className="flex flex-col gap-3 overflow-y-auto" style={{ maxHeight: '60vh' }}>
+        {tab === 'info' && (
+          <>
+            <div style={{ lineHeight: 1.7 }}>
+              ID: <b>{member && member.nick}</b><br />
+              Ngày tạo ID: {fmtDateTime((account && account.createdAt) || (member && member.joinedAt))}<br />
+              Đổi mật khẩu lần cuối: {fmtDateTime(account && account.pwChangedAt)}
+            </div>
+            <label htmlFor="nm-acc-name" className="flex flex-col gap-1"><b>Tên hiển thị</b><input id="nm-acc-name" value={name} maxLength={40} onChange={(e) => setName(e.target.value)} style={input} /></label>
+            <XPButton primary disabled={busy} onClick={() => go(() => onDisplayName(name.trim()))} className="self-start">Lưu tên</XPButton>
+          </>
+        )}
+        {tab === 'pw' && (
+          <>
+            <PwField id="nm-acc-cur" label="Mật khẩu hiện tại:" value={cur} onChange={setCur} autoComplete="current-password" mobile={mobile} />
+            <PwField id="nm-acc-new" label="Mật khẩu mới:" value={pw} onChange={setPw} autoComplete="new-password" mobile={mobile} meter idForCheck={member && member.nick} />
+            <PwField id="nm-acc-new2" label="Nhập lại mật khẩu mới:" value={pw2} onChange={setPw2} autoComplete="new-password" mobile={mobile} />
+            <div style={{ fontSize: 11, color: '#857a8c' }}>Đổi mật khẩu sẽ đăng xuất các thiết bị khác đang ghi nhớ.</div>
+            <XPButton primary disabled={busy} className="self-start" onClick={() => go(() => {
+              const p = pwProblem(pw, member && member.nick);
+              if (p) return p;
+              if (pw !== pw2) return 'Hai lần nhập mật khẩu mới chưa giống nhau.';
+              return onChangePassword(cur, pw);
+            })}>Đổi mật khẩu</XPButton>
+            <div style={{ borderTop: '1px solid #e3d6ea' }} />
+            <b>Câu hỏi bảo mật</b>
+            <select id="nm-acc-q" value={q} onChange={(e) => setQ(e.target.value)} style={input}>{SECURITY_QUESTIONS.map((x) => <option key={x} value={x}>{x}</option>)}</select>
+            <input id="nm-acc-a" value={a} onChange={(e) => setA(e.target.value)} placeholder="Câu trả lời mới" style={input} />
+            <PwField id="nm-acc-cur2" label="Mật khẩu hiện tại (để xác nhận):" value={cur} onChange={setCur} autoComplete="current-password" mobile={mobile} />
+            <XPButton disabled={busy} className="self-start" onClick={() => go(() => (normAnswer(a).length < 2 ? 'Nhập câu trả lời.' : onChangeQuestion(cur, q, a)))}>Lưu câu hỏi bảo mật</XPButton>
+          </>
+        )}
+        {tab === 'sec' && (
+          <>
+            <div>
+              <b>Lịch sử đăng nhập</b>
+              <div className="mt-1" style={{ border: '1px solid #e3d6ea', borderRadius: 2 }}>
+                {((account && account.logins) || []).map((l, i) => (
+                  <div key={`${l.t}-${i}`} className="flex justify-between px-2 py-1" style={{ fontSize: 11.5, borderTop: i ? '1px solid #f1eaf4' : 'none', background: i === 0 ? '#f8f2fb' : '#fff' }}>
+                    <span>{l.d}{i === 0 ? ' (lần này)' : ''}</span><span style={{ fontVariantNumeric: 'tabular-nums' }}>{fmtDateTime(l.t)}</span>
+                  </div>
+                ))}
+                {!((account && account.logins) || []).length && <div className="px-2 py-1" style={{ fontSize: 11.5, color: '#888' }}>Chưa có.</div>}
+              </div>
+              <div className="mt-1" style={{ fontSize: 11, color: '#857a8c' }}>Thấy lần đăng nhập lạ? Đổi mật khẩu ngay.</div>
+            </div>
+            <div>
+              <b>Thiết bị đã ghi nhớ</b>
+              <div className="mt-1 flex flex-col gap-1">
+                {devices.map(([k, d]) => (
+                  <div key={k} className="flex items-center justify-between gap-2 px-2 py-1" style={{ fontSize: 11.5, border: '1px solid #e3d6ea', borderRadius: 2 }}>
+                    <span>{d.d}{k === currentDeviceKey ? ' (máy này)' : ''}<br /><span style={{ color: '#888' }}>từ {fmtDateTime(d.t)}</span></span>
+                    <XPButton disabled={busy} onClick={() => go(() => onForgetDevice(k))}>Quên</XPButton>
+                  </div>
+                ))}
+                {!devices.length && <div style={{ fontSize: 11.5, color: '#888' }}>Không có thiết bị nào được ghi nhớ.</div>}
+              </div>
+              {devices.length > 0 && <XPButton disabled={busy} className="mt-2" onClick={() => go(onForgetOthers)}>Đăng xuất mọi thiết bị khác</XPButton>}
+            </div>
+            <label htmlFor="nm-autolock" className="flex flex-col gap-1">
+              <b>Tự khóa khi không dùng (trên máy này)</b>
+              <select id="nm-autolock" value={autolock} onChange={(e) => onAutolock(Number(e.target.value))} style={{ ...input, maxWidth: 200 }}>
+                <option value={0}>Không tự khóa</option>
+                <option value={5}>Sau 5 phút</option>
+                <option value={15}>Sau 15 phút</option>
+                <option value={30}>Sau 30 phút</option>
+                <option value={60}>Sau 1 giờ</option>
+              </select>
+            </label>
+          </>
+        )}
+        {msg && <div style={{ fontSize: 12, color: msg.bad ? '#c00000' : '#2a7a2a' }}>{msg.text}</div>}
+      </div>
+    </Modal>
   );
 }
 
@@ -2260,7 +2596,7 @@ function InviteHelpDialog({ onClose, isOwner }) {
           <li>{isOwner ? 'Bạn' : 'Chủ nhà (người tạo trang)'} bấm nút <b>Share</b> của artifact này.</li>
           <li>Thêm email từng người thân và chọn quyền <b>Editor</b>. Quyền thấp hơn (Viewer, Commenter) chỉ xem được, không gửi tin được.</li>
           <li><b>Đừng bật link công khai</b> (public link): khi bật, người ngoài tổ chức sẽ mất quyền gửi tin.</li>
-          <li>Người thân mở đường link trong email, đăng nhập claude.ai, bấm <b>Cho phép</b> khi được hỏi, rồi chọn nick và <b>Sign In</b>.</li>
+          <li>Người thân mở đường link trong email, đăng nhập claude.ai, bấm <b>Cho phép</b> khi được hỏi, rồi bấm <b>Get a new ID</b> để tạo ID và mật khẩu riêng.</li>
         </ol>
         <div className="p-2 rounded" style={{ background: '#f6f0fa', border: '1px solid #dccbe6', fontSize: 11.5 }}>
           Tin nhắn riêng chỉ hiện trong khung chat của hai người, nhưng dữ liệu được lưu chung trong trang: người có quyền Editor về kỹ thuật vẫn đọc được. Đây là app cho gia đình tin tưởng nhau, đừng gửi mật khẩu hay thông tin nhạy cảm.
@@ -2427,6 +2763,15 @@ export default function NhaMinhMessenger() {
   const [groupsOpen, setGroupsOpen] = useState({ room: true, family: true, bots: true });
   const [dbWarn, setDbWarn] = useState('');
   const [signedOutOnce, setSignedOutOnce] = useState(false);
+  const [account, setAccount] = useState(null);
+  const [accountLoaded, setAccountLoaded] = useState(false);
+  const [kickedMsg, setKickedMsg] = useState('');
+  const [autolock, setAutolockState] = useState(() => loadPref('autolock', 0));
+  const accountRef = useRef(null);
+  accountRef.current = account;
+  const sessionId = useRef(uid());
+  const lastActivity = useRef(Date.now());
+  const autoAway = useRef(false);
 
   const appRef = useRef(null);
   const chatWinRef = useRef(null);
@@ -2447,6 +2792,7 @@ export default function NhaMinhMessenger() {
   const live = useRef({});
 
   const solo = caps.ready && (!caps.db || !myId);
+  const inSession = phase === 'app' || phase === 'locked';
   const myMember = solo ? soloMe : members[myId] || null;
   const myNick = (myMember && myMember.nick) || 'tui';
   const myAvatarIdx = (myMember && myMember.avatar) || 0;
@@ -2533,6 +2879,21 @@ export default function NhaMinhMessenger() {
     return () => unsub();
   }, [caps.db, myId]);
 
+  // Tài khoản riêng (mật khẩu đã mã hóa, thiết bị ghi nhớ, lịch sử đăng nhập)
+  useEffect(() => {
+    if (!caps.ready) return undefined;
+    if (solo) { setAccount(loadPref('solo_account', null)); setAccountLoaded(true); return undefined; }
+    if (!caps.db || !myId) return undefined;
+    let unsub = () => {};
+    try {
+      unsub = caps.db.doc(`data/users/${myId}/account`).onSnapshot((snap) => {
+        setAccount(snap.exists ? snap.data() : null);
+        setAccountLoaded(true);
+      }, () => setAccountLoaded(true));
+    } catch (e) { setAccountLoaded(true); }
+    return () => unsub();
+  }, [caps.ready, solo, caps.db, myId]);
+
   // Ai đang mở app (room presence)
   useEffect(() => {
     if (!caps.room) return undefined;
@@ -2542,8 +2903,8 @@ export default function NhaMinhMessenger() {
 
   useEffect(() => {
     if (!caps.room) return;
-    caps.room.presence({ status: phase === 'app' ? myStatus : 'offline', typing: null }).catch(() => {});
-  }, [caps.room, phase, myStatus]);
+    caps.room.presence({ status: phase === 'app' ? myStatus : phase === 'locked' ? 'away' : 'offline', typing: null, sid: sessionId.current, at: signedInAt }).catch(() => {});
+  }, [caps.room, phase, myStatus, signedInAt]);
 
   const setTypingIn = (chat) => {
     const r = typingRef.current;
@@ -2585,7 +2946,7 @@ export default function NhaMinhMessenger() {
   const chatKey = chatIds.join('|');
 
   useEffect(() => {
-    if (!caps.db || !myId || phase !== 'app' || !chatKey) return undefined;
+    if (!caps.db || !myId || !inSession || !chatKey) return undefined;
     const unsubs = chatKey.split('|').map((cid) => {
       try {
         return caps.db.collection(`chats/${cid}/b`).orderBy('day', 'desc').limit(40).onSnapshot((snap) => {
@@ -2596,7 +2957,7 @@ export default function NhaMinhMessenger() {
       } catch (e) { return () => {}; }
     });
     return () => unsubs.forEach((u) => u());
-  }, [caps.db, myId, phase, chatKey]);
+  }, [caps.db, myId, inSession, chatKey]);
 
   const chatMessages = useMemo(() => {
     const out = {};
@@ -2633,7 +2994,7 @@ export default function NhaMinhMessenger() {
     return cid ? unread[cid] || 0 : 0;
   };
 
-  live.current = { soundOn, phase, activeKey, wins, mobile, mobileView, tabs, signedInAt, members, myId, botConvos, myNick };
+  live.current = { soundOn, phase, activeKey, wins, mobile, mobileView, tabs, signedInAt, members, myId, botConvos, myNick, myStatus, autolock, canLock: !!(account && account.pw) };
 
   const isVisible = (key) => {
     const L = live.current;
@@ -2642,7 +3003,8 @@ export default function NhaMinhMessenger() {
     return L.wins.chat.open && !L.wins.chat.min;
   };
 
-  const addToast = (t) => {
+  const addToast = (t0) => {
+    const t = live.current.phase === 'locked' ? { kind: 'info', headline: 'Bạn có tin nhắn mới', body: 'Mở khóa Messenger để xem.' } : t0;
     const id = uid();
     setToasts((prev) => [...prev.slice(-2), { ...t, id }]);
     later(() => setToasts((prev) => prev.filter((x) => x.id !== id)), 6000);
@@ -2764,7 +3126,7 @@ export default function NhaMinhMessenger() {
 
   /* ---------- tin nhắn mới đến ---------- */
   useEffect(() => {
-    if (phase !== 'app') return;
+    if (!inSession) return;
     const fresh = [];
     Object.entries(chatMessages).forEach(([cid, list]) => {
       list.forEach((m) => {
@@ -2797,7 +3159,7 @@ export default function NhaMinhMessenger() {
       }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages, phase]);
+  }, [chatMessages, inSession]);
 
   // Báo tin nhắn nhận được lúc vắng mặt
   useEffect(() => {
@@ -2816,7 +3178,7 @@ export default function NhaMinhMessenger() {
 
   // Người thân online → tiếng cửa mở + thông báo
   useEffect(() => {
-    if (phase !== 'app') { prevOnline.current = null; return; }
+    if (!inSession) { prevOnline.current = null; return; }
     const prev = prevOnline.current;
     prevOnline.current = onlineStatus;
     if (!prev || Date.now() - signedInAt < 4000) return;
@@ -2828,7 +3190,37 @@ export default function NhaMinhMessenger() {
     });
     Object.keys(prev).forEach((id) => { if (!onlineStatus[id] && members[id]) play('doorClose'); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [onlineStatus, phase]);
+  }, [onlineStatus, inSession]);
+
+  // Cùng ID đăng nhập ở nơi khác → phiên này bị đăng xuất (như ngày xưa)
+  useEffect(() => {
+    if (!inSession || !myId) return;
+    const other = peers.find((p) => p.by === myId && !p.sameTab && p.kind === 'viewer' && p.presence && p.presence.sid
+      && p.presence.sid !== sessionId.current && (p.presence.at || 0) > signedInAt && p.presence.status && p.presence.status !== 'offline');
+    if (!other) return;
+    const t = new Date(other.presence.at);
+    forceSignOut(`Bạn vừa bị đăng xuất vì ID "${myNick}" đã đăng nhập ở nơi khác lúc ${pad2(t.getHours())}:${pad2(t.getMinutes())}. Nếu đó không phải bạn, hãy đổi mật khẩu ngay (Messenger → Account Info).`);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [peers, inSession, myId, signedInAt]);
+
+  // Không thao tác: 10 phút tự chuyển "Be Right Back"; tự khóa nếu đã bật
+  useEffect(() => {
+    const mark = () => {
+      lastActivity.current = Date.now();
+      if (autoAway.current && live.current.phase === 'app') { autoAway.current = false; setMyStatus('online'); }
+    };
+    const evs = ['pointerdown', 'keydown', 'touchstart'];
+    evs.forEach((e) => window.addEventListener(e, mark, { passive: true }));
+    const iv = setInterval(() => {
+      const L = live.current;
+      if (L.phase !== 'app') return;
+      const idle = Date.now() - lastActivity.current;
+      if (L.autolock && L.canLock && idle > L.autolock * 60000) { lockApp(); return; }
+      if (idle > 10 * 60000 && L.myStatus === 'online' && !autoAway.current) { autoAway.current = true; setMyStatus('away'); }
+    }, 20000);
+    return () => { evs.forEach((e) => window.removeEventListener(e, mark)); clearInterval(iv); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ---------- gửi tin thật (lưu vào db) ---------- */
   const errToast = (e) => {
@@ -3051,50 +3443,218 @@ export default function NhaMinhMessenger() {
   };
   const cycleAvatar = () => updateMe({ avatar: (myAvatarIdx + 1) % MY_AVATARS.length });
 
-  /* ---------- đăng nhập / đăng xuất ---------- */
-  const handleSignIn = async ({ nick, avatarIdx, invisible, auto }) => {
-    sfx.unlock();
-    savePref('auto', auto);
-    const now = Date.now();
+  /* ---------- tài khoản: đăng ký / đăng nhập / bảo mật ---------- */
+  const acctPath = myId ? `data/users/${myId}/account` : null;
+  const runWrite = (path, fn) => {
+    const prev = writeChains.current[path] || Promise.resolve();
+    const p = prev.catch(() => {}).then(fn);
+    writeChains.current[path] = p.catch(() => {});
+    return p;
+  };
+  const writeAccount = (data, replace) => {
     if (solo) {
-      setSoloMe((cur) => { const n = { ...(cur || {}), nick, avatar: avatarIdx, joinedAt: (cur && cur.joinedAt) || now }; savePref('solo_me', n); return n; });
-    } else {
-      const ref = caps.db.doc(`members/${myId}`);
-      try {
-        if (members[myId]) await ref.update({ nick, avatar: avatarIdx, lastSeen: now });
-        else await ref.set({ nick, avatar: avatarIdx, statusMsg: '', statusHistory: [], joinedAt: now, lastSeen: now });
-      } catch (e) {
-        setLoginError(e && e.code === 'invalid_argument'
-          ? 'Bạn chưa có quyền ghi dữ liệu trong trang này. Nhờ chủ nhà mời bạn bằng email với quyền Editor.'
-          : `Chưa đăng nhập được (${(e && e.code) || 'lỗi'}). Thử lại nhé.`);
-        return false;
-      }
+      const n = replace ? data : { ...(accountRef.current || {}), ...data };
+      savePref('solo_account', n);
+      accountRef.current = n;
+      setAccount(n);
+      return Promise.resolve();
     }
-    setLoginError('');
+    return runWrite(acctPath, async () => {
+      const ref = caps.db.doc(acctPath);
+      if (replace || !accountRef.current) await ref.set(data);
+      else await ref.update(data);
+    });
+  };
+  const errMsg = (e) => (e && e.code === 'invalid_argument'
+    ? 'Bạn chưa có quyền ghi dữ liệu trong trang này. Nhờ chủ nhà mời bạn bằng email với quyền Editor.'
+    : `Chưa lưu được (${(e && e.code) || 'lỗi'}). Thử lại nhé.`);
+  const deviceKeyOf = async (token) => `d${fnv(await sha256b64(token))}`;
+  const storedDevice = () => { const d = loadPref('device', null); return d && d.uid === (myId || 'solo') && d.token ? d : null; };
+  const [currentDeviceKey, setCurrentDeviceKey] = useState(null);
+  useEffect(() => {
+    const d = storedDevice();
+    if (d && hasCrypto()) deviceKeyOf(d.token).then(setCurrentDeviceKey).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myId]);
+
+  const touchMember = () => {
+    if (!solo && caps.db && myId && live.current.members[myId]) enqueueWrite(`members/${myId}`, () => caps.db.doc(`members/${myId}`).update({ lastSeen: Date.now() }));
+  };
+
+  const enterApp = (invisible, prevLogin) => {
+    lastActivity.current = Date.now();
+    autoAway.current = false;
+    if (live.current.phase === 'locked') { setPhase('app'); return; }
+    sessionId.current = uid();
     setMyStatus(invisible ? 'invisible' : 'online');
-    setSignedInAt(now);
+    setSignedInAt(Date.now());
     offlineSummaryDone.current = false;
+    setKickedMsg('');
     setTabs([]);
     setActiveKey(null);
     setMobileView('list');
     setWins(initialWins());
     setFocusWin('list');
     setPhase('app');
-    return true;
+    if (prevLogin) later(() => addToast({ kind: 'info', headline: 'Lần đăng nhập trước của bạn', body: `${fmtDateTime(prevLogin.t)} · ${prevLogin.d}` }), 1500);
   };
 
-  const signOut = () => {
+  const failAttempt = async (acc, what) => {
+    const fails = (acc.fails || 0) + 1;
+    try { await writeAccount(fails >= 5 ? { fails: 0, lockUntil: Date.now() + 5 * 60000 } : { fails }); } catch (e) { /* bỏ qua */ }
+    return fails >= 5 ? `${what} sai 5 lần liên tiếp. ID bị khóa đăng nhập 5 phút.` : `${what} chưa đúng. Còn ${5 - fails} lần thử trước khi bị khóa tạm.`;
+  };
+  const lockedMsg = (acc) => (acc.lockUntil && acc.lockUntil > Date.now()
+    ? `Thử sai quá nhiều lần. Thử lại sau ${Math.ceil((acc.lockUntil - Date.now()) / 60000)} phút.` : '');
+
+  const doSignIn = async ({ id, password, useToken, remember, auto, invisible }) => {
+    const me = myMember;
+    if (!me) return 'Tài khoản Claude này chưa có ID. Bấm "Get a new ID" để đăng ký.';
+    if (id !== me.nick) {
+      return takenNicks.has(id)
+        ? 'ID này thuộc người khác. Mỗi người chỉ đăng nhập được ID của chính mình (gắn với tài khoản Claude đang dùng).'
+        : 'ID không tồn tại. Kiểm tra lại chính tả nhé.';
+    }
+    const acc = accountRef.current;
+    if (!acc || !acc.pw) return 'ID này chưa đặt mật khẩu.';
+    const lm = lockedMsg(acc);
+    if (lm) return lm;
+    let ok = false;
+    const dev = storedDevice();
+    if (useToken) {
+      if (dev) {
+        const k = await deviceKeyOf(dev.token);
+        const rec = acc.devices && acc.devices[k];
+        ok = !!rec && rec.hash === (await sha256b64(dev.token));
+      }
+      if (!ok) { savePref('device', null); setCurrentDeviceKey(null); return 'Máy này không còn được ghi nhớ. Nhập mật khẩu nhé.'; }
+    } else {
+      ok = await checkVerifier(password, acc.pw);
+    }
+    if (!ok) return failAttempt(acc, 'Mật khẩu');
+    if (live.current.phase === 'locked') {
+      if (acc.fails) writeAccount({ fails: 0 }).catch(() => {});
+      enterApp(false);
+      return null;
+    }
+    const now = Date.now();
+    const device = describeDevice();
+    const prevLogin = (acc.logins || [])[0] || null;
+    const devices = { ...(acc.devices || {}) };
+    if (remember && !useToken) {
+      if (dev) delete devices[await deviceKeyOf(dev.token)];
+      const token = randB64(24);
+      const k = await deviceKeyOf(token);
+      devices[k] = { hash: await sha256b64(token), d: device, t: now };
+      savePref('device', { uid: myId || 'solo', token });
+      setCurrentDeviceKey(k);
+    } else if (!remember && dev) {
+      delete devices[await deviceKeyOf(dev.token)];
+      savePref('device', null);
+      setCurrentDeviceKey(null);
+    }
+    const next = { ...acc, fails: 0, lockUntil: 0, devices, logins: [{ t: now, d: device }, ...(acc.logins || [])].slice(0, 10) };
+    try { await writeAccount(next, true); } catch (e) { return errMsg(e); }
+    savePref(`remember_${myId || 'solo'}`, !!remember);
+    savePref(`auto_${myId || 'solo'}`, !!(remember && auto));
+    savePref(`last_id_${myId || 'solo'}`, remember ? id : '');
+    touchMember();
+    enterApp(invisible, prevLogin);
+    return null;
+  };
+
+  const newAccountDoc = async (password, question, answer, createdAt) => {
+    const now = Date.now();
+    return {
+      pw: await makeVerifier(password),
+      sq: { q: question, ...(await makeVerifier(normAnswer(answer))) },
+      fails: 0, lockUntil: 0, devices: {}, logins: [{ t: now, d: describeDevice() }], createdAt: createdAt || now, pwChangedAt: now,
+    };
+  };
+
+  const doRegister = async ({ id, password, displayName, question, answer, avatarIdx, invisible }) => {
+    if (myMember && accountRef.current && accountRef.current.pw) return `Tài khoản Claude này đã có ID "${myMember.nick}". Mỗi người chỉ có một ID.`;
+    if (takenNicks.has(id)) return `ID "${id}" đã có người dùng.`;
+    const now = Date.now();
+    try {
+      await writeAccount(await newAccountDoc(password, question, answer, now), true);
+      const prof = { nick: id, displayName: displayName || '', avatar: avatarIdx, statusMsg: '', statusHistory: [], joinedAt: now, lastSeen: now };
+      if (solo) { setSoloMe(prof); savePref('solo_me', prof); } else await caps.db.doc(`members/${myId}`).set(prof);
+    } catch (e) { return errMsg(e); }
+    savePref(`last_id_${myId || 'solo'}`, id);
+    enterApp(invisible, null);
+    return null;
+  };
+
+  const doSetPassword = async ({ password, question, answer }) => {
+    try { await writeAccount(await newAccountDoc(password, question, answer, myMember && myMember.joinedAt), true); } catch (e) { return errMsg(e); }
+    touchMember();
+    enterApp(false, null);
+    return null;
+  };
+
+  const doRecover = async ({ answer, password }) => {
+    const acc = accountRef.current;
+    if (!acc || !acc.sq) return 'ID này chưa có câu hỏi bảo mật.';
+    const lm = lockedMsg(acc);
+    if (lm) return lm;
+    if (!(await checkVerifier(normAnswer(answer), acc.sq))) return failAttempt(acc, 'Câu trả lời bảo mật');
+    const now = Date.now();
+    const next = { ...acc, pw: await makeVerifier(password), fails: 0, lockUntil: 0, devices: {}, pwChangedAt: now, logins: [{ t: now, d: `${describeDevice()} (đặt lại mật khẩu)` }, ...(acc.logins || [])].slice(0, 10) };
+    try { await writeAccount(next, true); } catch (e) { return errMsg(e); }
+    savePref('device', null);
+    setCurrentDeviceKey(null);
+    touchMember();
+    enterApp(false, null);
+    return null;
+  };
+
+  const changePassword = async (cur, nw) => {
+    const acc = accountRef.current;
+    if (!acc || !(await checkVerifier(cur, acc.pw))) return 'Mật khẩu hiện tại chưa đúng.';
+    const keep = {};
+    if (currentDeviceKey && acc.devices && acc.devices[currentDeviceKey]) keep[currentDeviceKey] = acc.devices[currentDeviceKey];
+    try { await writeAccount({ ...acc, pw: await makeVerifier(nw), devices: keep, pwChangedAt: Date.now() }, true); } catch (e) { return errMsg(e); }
+    return null;
+  };
+  const changeQuestion = async (cur, q, a) => {
+    const acc = accountRef.current;
+    if (!acc || !(await checkVerifier(cur, acc.pw))) return 'Mật khẩu hiện tại chưa đúng.';
+    try { await writeAccount({ ...acc, sq: { q, ...(await makeVerifier(normAnswer(a))) } }, true); } catch (e) { return errMsg(e); }
+    return null;
+  };
+  const forgetDevice = async (k) => {
+    const acc = accountRef.current;
+    const devices = { ...((acc && acc.devices) || {}) };
+    delete devices[k];
+    try { await writeAccount({ ...acc, devices }, true); } catch (e) { return errMsg(e); }
+    if (k === currentDeviceKey) { savePref('device', null); setCurrentDeviceKey(null); }
+    return null;
+  };
+  const forgetOthers = async () => {
+    const acc = accountRef.current;
+    const keep = {};
+    if (currentDeviceKey && acc.devices && acc.devices[currentDeviceKey]) keep[currentDeviceKey] = acc.devices[currentDeviceKey];
+    try { await writeAccount({ ...acc, devices: keep }, true); } catch (e) { return errMsg(e); }
+    return null;
+  };
+  const setAutolock = (m) => { setAutolockState(m); savePref('autolock', m); };
+  const lockApp = () => { setTypingIn(null); setModal(null); setPhase('locked'); };
+
+  const signOut = (msg) => {
     setTypingIn(null);
     clearTimeout(readTimer.current);
     flushRead();
-    if (!solo && caps.db && myId && members[myId]) enqueueWrite(`members/${myId}`, () => caps.db.doc(`members/${myId}`).update({ lastSeen: Date.now() }));
+    touchMember();
     setSignedOutOnce(true);
     setToasts([]);
     setModal(null);
     setTabs([]);
     setActiveKey(null);
+    setKickedMsg(typeof msg === 'string' ? msg : '');
     setPhase('login');
   };
+  const forceSignOut = (msg) => { play('doorClose'); signOut(msg); };
 
   // Ghi "online lần cuối" khi rời trang
   useEffect(() => {
@@ -3142,7 +3702,6 @@ export default function NhaMinhMessenger() {
     return () => window.removeEventListener('keydown', onKey);
   });
 
-  const [loginError, setLoginError] = useState('');
 
   /* ---------- dữ liệu cho giao diện ---------- */
   const meOnline = phase === 'app' && myStatus !== 'invisible' ? 1 : 0;
@@ -3221,6 +3780,8 @@ export default function NhaMinhMessenger() {
       items: [
         ...STATUS_OPTIONS.map((s) => ({ label: s.label, checked: myStatus === s.id, onClick: () => setMyStatus(s.id) })),
         { separator: true },
+        { label: 'Account Info (bảo mật)...', onClick: () => setModal('account') },
+        { label: 'Khóa Messenger ngay', disabled: !(account && account.pw), onClick: lockApp },
         { label: 'Change My Display Image', onClick: cycleAvatar },
         { label: 'Sound Effects', checked: soundOn, onClick: () => setSoundOn((v) => !v) },
         { separator: true },
@@ -3328,23 +3889,36 @@ export default function NhaMinhMessenger() {
     onInviteHelp: () => setModal('invite'),
     onAudibleHelp: () => setModal('audible'),
   };
+  const loginPhase = phase === 'connecting' || (caps.ready && !accountLoaded) ? 'connecting' : phase;
   const loginProps = {
-    phase,
+    phase: loginPhase,
     member: myMember,
+    account,
     profileName,
     takenNicks,
     solo,
-    autoSignIn: !!loadPref('auto', false) && !signedOutOnce,
-    onSignIn: handleSignIn,
-    error: loginError,
+    lastId: loadPref(`last_id_${myId || 'solo'}`, ''),
+    hasRememberedDevice: !!storedDevice(),
+    rememberPref: !!loadPref(`remember_${myId || 'solo'}`, false),
+    autoSignIn: !!loadPref(`auto_${myId || 'solo'}`, false) && !signedOutOnce,
+    kickedMsg,
+    onSignIn: doSignIn,
+    onRegister: doRegister,
+    onRecover: doRecover,
+    onSetPassword: doSetPassword,
   };
-  const loginKey = `${phase === 'connecting' ? 'c' : 'l'}${myMember ? 'm' : 'n'}`;
+  const loginKey = `${loginPhase}-${myMember ? 'm' : 'n'}-${account && account.pw ? 'p' : 'x'}`;
   const toastViews = toasts.map((t) => ({ ...t, cid: t.key }));
   const onToastOpen = (t) => { setToasts((p) => p.filter((x) => x.id !== t.id)); if (t.cid) openChat(t.cid); };
   const closeToast = (id) => setToasts((p) => p.filter((x) => x.id !== id));
   const modalEl = modal === 'invite' ? <InviteHelpDialog isOwner={isOwner} onClose={() => setModal(null)} />
     : modal === 'audible' ? <AudibleHelpDialog onClose={() => setModal(null)} onPreview={(id) => { sfx.unlock(); showAudible(id, myNick); }} />
-      : modal === 'about' ? <AboutDialog solo={solo} onClose={() => setModal(null)} /> : null;
+      : modal === 'about' ? <AboutDialog solo={solo} onClose={() => setModal(null)} />
+        : modal === 'account' && myMember ? (
+          <AccountDialog member={myMember} account={account} currentDeviceKey={currentDeviceKey} autolock={autolock} onAutolock={setAutolock} mobile={mobile}
+            onChangePassword={changePassword} onChangeQuestion={changeQuestion} onDisplayName={async (n) => { updateMe({ displayName: n }); return null; }}
+            onForgetDevice={forgetDevice} onForgetOthers={forgetOthers} onClose={() => setModal(null)} />
+        ) : null;
   const smallIcon = <SmileyFace size={16} />;
   const audEl = audFlash ? (
     <div key={audFlash.k} className="fixed inset-0 flex items-center justify-center pointer-events-none" style={{ zIndex: 350 }}>
